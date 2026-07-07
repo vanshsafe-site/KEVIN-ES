@@ -53,6 +53,19 @@ async function sendToKevin(message: string): Promise<string> {
   return data.reply ?? "";
 }
 
+async function analyzeMoodFromImage(imageBase64: string) {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: imageBase64, mode: "face" }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Something went wrong." }));
+    throw new Error(err.error || "Something went wrong.");
+  }
+  return (await res.json()) as { mood?: string; confidence?: number; message?: string };
+}
+
 export function KevinApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -383,43 +396,30 @@ export function KevinApp() {
       }
 
       const scanFace = async () => {
-        if (!videoRef.current || !window.faceapi) return;
+        if (!videoRef.current) return;
         if (videoRef.current.readyState < 2) return;
 
         try {
-          const result = await window.faceapi
-            .detectSingleFace(
-              videoRef.current,
-              new window.faceapi.TinyFaceDetectorOptions({
-                inputSize: 224,
-                scoreThreshold: 0.5,
-              }),
-            )
-            .withFaceLandmarks()
-            .withFaceExpressions();
+          const canvas = document.createElement("canvas");
+          canvas.width = videoRef.current.videoWidth || 640;
+          canvas.height = videoRef.current.videoHeight || 480;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            setFaceStatus("The camera preview could not be captured for analysis.");
+            return;
+          }
 
-          if (!result?.expressions) {
+          ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+          const imageBase64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+          const result = await analyzeMoodFromImage(imageBase64);
+          if (!result.mood) {
             setFaceStatus("No face detected yet. Move a little closer to the camera.");
             return;
           }
 
-          const entries = Object.entries(result.expressions as Record<string, number>);
-          const [expression, score] = entries.sort((a, b) => b[1] - a[1])[0] ?? ["neutral", 0.4];
-
-          const moodMap: Record<string, { label: string; message: string }> = {
-            happy: { label: "Cheerful", message: "You look upbeat and bright." },
-            sad: { label: "Reflective", message: "You seem thoughtful or a little low." },
-            angry: { label: "Tense", message: "You seem tense or stressed." },
-            fearful: { label: "Uneasy", message: "You seem uneasy right now." },
-            surprised: { label: "Surprised", message: "You look caught off guard." },
-            disgusted: { label: "Cautious", message: "You look guarded or uncomfortable." },
-            neutral: { label: "Neutral", message: "Your expression looks calm and steady." },
-          };
-
-          const mood = moodMap[expression] ?? moodMap.neutral;
-          setFaceMood(mood.label);
-          setFaceConfidence(Number(score.toFixed(2)));
-          setFaceStatus(`${mood.message} ${Math.round(score * 100)}% confidence.`);
+          setFaceMood(result.mood ?? "Neutral");
+          setFaceConfidence(Number((result.confidence ?? 0.4).toFixed(2)));
+          setFaceStatus(`${result.message ?? "Your mood looks calm."} ${Math.round((result.confidence ?? 0.4) * 100)}% confidence.`);
         } catch {
           setFaceStatus("The face scan is still warming up — try again in a second.");
         }
@@ -428,7 +428,7 @@ export function KevinApp() {
       void scanFace();
       faceScanTimerRef.current = window.setInterval(() => {
         void scanFace();
-      }, 1200);
+      }, 1800);
     } catch (error) {
       setFaceLoading(false);
       setCameraActive(false);
