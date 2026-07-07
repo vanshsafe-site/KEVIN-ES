@@ -25,7 +25,6 @@ declare global {
   interface Window {
     SpeechRecognition?: SpeechRecognitionConstructor;
     webkitSpeechRecognition?: SpeechRecognitionConstructor;
-    faceapi?: any;
   }
 }
 
@@ -53,19 +52,6 @@ async function sendToKevin(message: string): Promise<string> {
   return data.reply ?? "";
 }
 
-async function analyzeMoodFromImage(imageBase64: string) {
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ image: imageBase64, mode: "face" }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Something went wrong." }));
-    throw new Error(err.error || "Something went wrong.");
-  }
-  return (await res.json()) as { mood?: string; confidence?: number; message?: string };
-}
-
 export function KevinApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -74,23 +60,10 @@ export function KevinApp() {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [autoSpeak, setAutoSpeak] = useState(true);
   const [voiceStatus, setVoiceStatus] = useState("Voice ready");
-  const [faceScanOpen, setFaceScanOpen] = useState(true);
-  const [cameraActive, setCameraActive] = useState(false);
-  const [faceLoading, setFaceLoading] = useState(false);
-  const [faceMood, setFaceMood] = useState("Neutral");
-  const [faceConfidence, setFaceConfidence] = useState(0.38);
-  const [cameraReady, setCameraReady] = useState(false);
-  const [captureReady, setCaptureReady] = useState(false);
-  const [faceStatus, setFaceStatus] = useState(
-    "Camera ready. Capture a photo to see your mood result.",
-  );
   const chatRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const autoSendTimerRef = useRef<number | null>(null);
-  const faceScanTimerRef = useRef<number | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
   const nearBottomRef = useRef(true);
   const sendRef = useRef<(raw: string) => Promise<void>>(() => Promise.resolve());
 
@@ -120,25 +93,6 @@ export function KevinApp() {
     const el = chatRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, loading]);
-
-  const stopFaceScan = useCallback(() => {
-    if (faceScanTimerRef.current) {
-      window.clearInterval(faceScanTimerRef.current);
-      faceScanTimerRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setCameraActive(false);
-    setCameraReady(false);
-    setCaptureReady(false);
-    setFaceLoading(false);
-    setFaceStatus("Camera paused.");
-  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -210,12 +164,6 @@ export function KevinApp() {
       }
     };
   }, []);
-
-  useEffect(() => {
-    return () => {
-      stopFaceScan();
-    };
-  }, [stopFaceScan]);
 
   const speakText = useCallback(
     (text: string) => {
@@ -292,111 +240,6 @@ export function KevinApp() {
     recognition.start();
   }, [isListening, voiceSupported]);
 
-  const startFaceScan = useCallback(async () => {
-    if (typeof window === "undefined") return;
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setFaceStatus("Camera access is not available on this browser.");
-      return;
-    }
-
-    setFaceLoading(true);
-    setFaceStatus("Opening camera…");
-
-    try {
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "user" },
-            width: { ideal: 640 },
-            height: { ideal: 480 },
-          },
-          audio: false,
-        });
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        });
-      }
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        streamRef.current = stream;
-        videoRef.current.muted = true;
-        videoRef.current.playsInline = true;
-        try {
-          await videoRef.current.play();
-          setCameraReady(true);
-          setCaptureReady(true);
-        } catch {
-          setCameraReady(false);
-          setCaptureReady(false);
-          setFaceStatus("Camera is connected, but autoplay is blocked. Allow playback and try again.");
-        }
-      }
-
-      setCameraActive(true);
-      setFaceScanOpen(true);
-      setFaceLoading(false);
-      setFaceStatus("Camera ready. Capture a photo to see your mood result.");
-    } catch (error) {
-      setFaceLoading(false);
-      setCameraActive(false);
-      setFaceStatus(
-        error instanceof Error
-          ? error.message
-          : "Camera access was blocked. Please allow camera permission and try again.",
-      );
-    }
-  }, []);
-
-  const captureFaceImage = useCallback(async () => {
-    if (!videoRef.current) {
-      setFaceStatus("The camera preview is not ready yet.");
-      return;
-    }
-
-    if (videoRef.current.readyState < 2) {
-      setFaceStatus("The camera is still warming up. Please wait a moment and try again.");
-      return;
-    }
-
-    setFaceLoading(true);
-    setFaceStatus("Scanning photo…");
-
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = videoRef.current.videoWidth || 640;
-      canvas.height = videoRef.current.videoHeight || 480;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        setFaceStatus("The photo could not be captured.");
-        return;
-      }
-
-      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const imageBase64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
-      const result = await analyzeMoodFromImage(imageBase64);
-      if (!result.mood) {
-        setFaceStatus("No face detected yet. Move a little closer to the camera and try again.");
-        return;
-      }
-
-      setFaceMood(result.mood ?? "Neutral");
-      setFaceConfidence(Number((result.confidence ?? 0.4).toFixed(2)));
-      setFaceStatus(`${result.message ?? "Your mood looks calm."} ${Math.round((result.confidence ?? 0.4) * 100)}% confidence.`);
-    } catch {
-      setFaceStatus("Could not scan photo. Please try again.");
-    } finally {
-      setFaceLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void startFaceScan();
-  }, [startFaceScan]);
-
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -418,53 +261,6 @@ export function KevinApp() {
 
       <main className="kevin-chat" ref={chatRef}>
         <div className="kevin-chat-inner" aria-live="polite">
-          <section className="kevin-face-scan" aria-live="polite">
-            <div className="kevin-face-scan-header">
-              <div>
-                <h3>Photo mood check</h3>
-              </div>
-            </div>
-            <div className="kevin-face-scan-body">
-              <div className="kevin-face-video-wrap">
-                {cameraActive ? (
-                  <video
-                    ref={videoRef}
-                    className="kevin-face-video"
-                    autoPlay
-                    playsInline
-                    muted
-                    onLoadedMetadata={() => setCameraReady(true)}
-                    onPlay={() => setCameraReady(true)}
-                    onError={() => {
-                      setCameraReady(false);
-                      setFaceStatus("Camera could not be shown.");
-                    }}
-                  />
-                ) : (
-                  <div className="kevin-face-placeholder">
-                    <span>Camera preview</span>
-                  </div>
-                )}
-              </div>
-              <div className="kevin-face-insight">
-                <div className="kevin-face-pill">
-                  {faceLoading ? "Scanning…" : faceMood}
-                </div>
-                <p>{faceStatus}</p>
-                <div className="kevin-face-actions">
-                  <button
-                    type="button"
-                    className="kevin-face-button kevin-face-button-primary"
-                    onClick={() => void captureFaceImage()}
-                    disabled={!cameraActive || faceLoading || !captureReady}
-                  >
-                    {faceLoading ? "Scanning…" : "Capture"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </section>
-
           {messages.length === 0 ? (
             <div className="kevin-empty">
               <div
