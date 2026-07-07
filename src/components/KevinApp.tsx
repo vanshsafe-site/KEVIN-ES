@@ -25,6 +25,7 @@ declare global {
   interface Window {
     SpeechRecognition?: SpeechRecognitionConstructor;
     webkitSpeechRecognition?: SpeechRecognitionConstructor;
+    faceapi?: any;
   }
 }
 
@@ -60,10 +61,21 @@ export function KevinApp() {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [autoSpeak, setAutoSpeak] = useState(true);
   const [voiceStatus, setVoiceStatus] = useState("Voice ready");
+  const [faceScanOpen, setFaceScanOpen] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [faceLoading, setFaceLoading] = useState(false);
+  const [faceMood, setFaceMood] = useState("Neutral");
+  const [faceConfidence, setFaceConfidence] = useState(0.38);
+  const [faceStatus, setFaceStatus] = useState(
+    "Tap to scan your face and let Kevin estimate your mood.",
+  );
   const chatRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const autoSendTimerRef = useRef<number | null>(null);
+  const faceScanTimerRef = useRef<number | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const nearBottomRef = useRef(true);
   const sendRef = useRef<(raw: string) => Promise<void>>(() => Promise.resolve());
 
@@ -93,6 +105,23 @@ export function KevinApp() {
     const el = chatRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, loading]);
+
+  const stopFaceScan = useCallback(() => {
+    if (faceScanTimerRef.current) {
+      window.clearInterval(faceScanTimerRef.current);
+      faceScanTimerRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+    setFaceLoading(false);
+    setFaceStatus("Face scan paused.");
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -164,6 +193,12 @@ export function KevinApp() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      stopFaceScan();
+    };
+  }, [stopFaceScan]);
 
   const speakText = useCallback(
     (text: string) => {
@@ -240,6 +275,136 @@ export function KevinApp() {
     recognition.start();
   }, [isListening, voiceSupported]);
 
+  const startFaceScan = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setFaceStatus("Camera access is not available on this browser.");
+      return;
+    }
+
+    setFaceLoading(true);
+    setFaceStatus("Loading your camera and mood model…");
+
+    try {
+      if (!window.faceapi) {
+        await new Promise<void>((resolve, reject) => {
+          const existingScript = document.querySelector(
+            'script[src*="face-api.js"]',
+          ) as HTMLScriptElement | null;
+
+          if (existingScript) {
+            if (window.faceapi) {
+              resolve();
+              return;
+            }
+            existingScript.addEventListener("load", () => resolve(), { once: true });
+            existingScript.addEventListener("error", () => reject(new Error("Unable to load face analysis library.")), { once: true });
+            return;
+          }
+
+          const script = document.createElement("script");
+          script.src = "https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js";
+          script.async = true;
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("Unable to load face analysis library."));
+          document.body.appendChild(script);
+        });
+      }
+
+      const modelUrl = "https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights/";
+      await window.faceapi?.nets?.tinyFaceDetector?.load(modelUrl);
+      await window.faceapi?.nets?.faceLandmark68Net?.load(modelUrl);
+      await window.faceapi?.nets?.faceExpressionNet?.load(modelUrl);
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" },
+        audio: false,
+      });
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        streamRef.current = stream;
+        await videoRef.current.play();
+      }
+
+      setCameraActive(true);
+      setFaceScanOpen(true);
+      setFaceLoading(false);
+      setFaceStatus("Camera ready — hold still for a moment.");
+
+      if (faceScanTimerRef.current) {
+        window.clearInterval(faceScanTimerRef.current);
+      }
+
+      const scanFace = async () => {
+        if (!videoRef.current || !window.faceapi) return;
+        if (videoRef.current.readyState < 2) return;
+
+        try {
+          const result = await window.faceapi
+            .detectSingleFace(
+              videoRef.current,
+              new window.faceapi.TinyFaceDetectorOptions({
+                inputSize: 224,
+                scoreThreshold: 0.5,
+              }),
+            )
+            .withFaceLandmarks()
+            .withFaceExpressions();
+
+          if (!result?.expressions) {
+            setFaceStatus("No face detected yet. Move a little closer to the camera.");
+            return;
+          }
+
+          const entries = Object.entries(result.expressions as Record<string, number>);
+          const [expression, score] = entries.sort((a, b) => b[1] - a[1])[0] ?? ["neutral", 0.4];
+
+          const moodMap: Record<string, { label: string; message: string }> = {
+            happy: { label: "Cheerful", message: "You look upbeat and bright." },
+            sad: { label: "Reflective", message: "You seem thoughtful or a little low." },
+            angry: { label: "Tense", message: "You seem tense or stressed." },
+            fearful: { label: "Uneasy", message: "You seem uneasy right now." },
+            surprised: { label: "Surprised", message: "You look caught off guard." },
+            disgusted: { label: "Cautious", message: "You look guarded or uncomfortable." },
+            neutral: { label: "Neutral", message: "Your expression looks calm and steady." },
+          };
+
+          const mood = moodMap[expression] ?? moodMap.neutral;
+          setFaceMood(mood.label);
+          setFaceConfidence(Number(score.toFixed(2)));
+          setFaceStatus(`${mood.message} ${Math.round(score * 100)}% confidence.`);
+        } catch {
+          setFaceStatus("The face scan is still warming up — try again in a second.");
+        }
+      };
+
+      void scanFace();
+      faceScanTimerRef.current = window.setInterval(() => {
+        void scanFace();
+      }, 1200);
+    } catch (error) {
+      setFaceLoading(false);
+      setCameraActive(false);
+      setFaceStatus(
+        error instanceof Error
+          ? error.message
+          : "Camera access was blocked. Please allow camera permission and try again.",
+      );
+    }
+  }, []);
+
+  const toggleFaceScan = useCallback(async () => {
+    if (faceScanOpen) {
+      stopFaceScan();
+      setFaceScanOpen(false);
+      return;
+    }
+
+    setFaceScanOpen(true);
+    await startFaceScan();
+  }, [faceScanOpen, startFaceScan, stopFaceScan]);
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -261,6 +426,73 @@ export function KevinApp() {
 
       <main className="kevin-chat" ref={chatRef}>
         <div className="kevin-chat-inner" aria-live="polite">
+          <section className="kevin-face-scan" aria-live="polite">
+            <div className="kevin-face-scan-header">
+              <div>
+                <h3>Face mood scan</h3>
+                <p>Let Kevin estimate your current mood from your camera.</p>
+              </div>
+              <button
+                type="button"
+                className="kevin-face-scan-toggle"
+                onClick={() => void toggleFaceScan()}
+              >
+                {faceScanOpen ? "Hide scan" : "Scan face"}
+              </button>
+            </div>
+            {faceScanOpen ? (
+              <div className="kevin-face-scan-body">
+                <div className="kevin-face-video-wrap">
+                  {cameraActive ? (
+                    <video
+                      ref={videoRef}
+                      className="kevin-face-video"
+                      autoPlay
+                      playsInline
+                      muted
+                    />
+                  ) : (
+                    <div className="kevin-face-placeholder">
+                      <span>Camera preview will appear here</span>
+                    </div>
+                  )}
+                </div>
+                <div className="kevin-face-insight">
+                  <div className="kevin-face-pill">
+                    {faceLoading ? "Reading…" : faceMood}
+                  </div>
+                  <p>{faceStatus}</p>
+                  <div className="kevin-face-confidence">
+                    <span>Confidence</span>
+                    <strong>{Math.round(faceConfidence * 100)}%</strong>
+                  </div>
+                  <div className="kevin-face-actions">
+                    <button
+                      type="button"
+                      className="kevin-face-button kevin-face-button-primary"
+                      onClick={() => void startFaceScan()}
+                      disabled={faceLoading || cameraActive}
+                    >
+                      {cameraActive ? "Scanning…" : "Start camera"}
+                    </button>
+                    <button
+                      type="button"
+                      className="kevin-face-button"
+                      onClick={() => stopFaceScan()}
+                      disabled={!cameraActive}
+                    >
+                      Stop
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="kevin-face-hint">
+                Tap “Scan face” to let Kevin read your expression and offer a kinder response.
+              </p>
+            )}
+          </section>
+
           {messages.length === 0 ? (
             <div className="kevin-empty">
               <div
