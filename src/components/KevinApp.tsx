@@ -80,6 +80,7 @@ export function KevinApp() {
   const [faceMood, setFaceMood] = useState("Neutral");
   const [faceConfidence, setFaceConfidence] = useState(0.38);
   const [cameraReady, setCameraReady] = useState(false);
+  const [captureReady, setCaptureReady] = useState(false);
   const [faceStatus, setFaceStatus] = useState(
     "Tap to scan your face and let Kevin estimate your mood.",
   );
@@ -134,6 +135,7 @@ export function KevinApp() {
     }
     setCameraActive(false);
     setCameraReady(false);
+    setCaptureReady(false);
     setFaceLoading(false);
     setFaceStatus("Face scan paused.");
   }, []);
@@ -298,56 +300,9 @@ export function KevinApp() {
     }
 
     setFaceLoading(true);
-    setFaceStatus("Loading your camera and mood model…");
+    setFaceStatus("Opening your camera…");
 
     try {
-      if (!window.faceapi) {
-        await new Promise<void>((resolve, reject) => {
-          const existingScript = document.querySelector(
-            'script[src*="face-api.js"]',
-          ) as HTMLScriptElement | null;
-
-          if (existingScript) {
-            if (window.faceapi) {
-              resolve();
-              return;
-            }
-            existingScript.addEventListener("load", () => resolve(), { once: true });
-            existingScript.addEventListener("error", () => reject(new Error("Unable to load face analysis library.")), { once: true });
-            return;
-          }
-
-          const script = document.createElement("script");
-          script.src = "https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js";
-          script.async = true;
-          script.onload = () => resolve();
-          script.onerror = () => reject(new Error("Unable to load face analysis library."));
-          document.body.appendChild(script);
-        });
-      }
-
-      const modelBaseUrls = [
-        "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/",
-        "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights/",
-      ];
-
-      let loadedModelBase = "";
-      for (const candidate of modelBaseUrls) {
-        try {
-          await window.faceapi?.nets?.tinyFaceDetector?.load(candidate);
-          await window.faceapi?.nets?.faceLandmark68Net?.load(candidate);
-          await window.faceapi?.nets?.faceExpressionNet?.load(candidate);
-          loadedModelBase = candidate;
-          break;
-        } catch {
-          // Try the next CDN if the weight manifest is unavailable.
-        }
-      }
-
-      if (!loadedModelBase) {
-        throw new Error("The face analysis models could not be loaded from the available CDNs.");
-      }
-
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -365,7 +320,6 @@ export function KevinApp() {
         });
       }
 
-      let previewReady = false;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
@@ -373,11 +327,11 @@ export function KevinApp() {
         videoRef.current.playsInline = true;
         try {
           await videoRef.current.play();
-          previewReady = true;
           setCameraReady(true);
+          setCaptureReady(true);
         } catch {
-          previewReady = false;
           setCameraReady(false);
+          setCaptureReady(false);
           setFaceStatus("Camera is connected, but autoplay is blocked. Allow playback and try again.");
         }
       }
@@ -386,49 +340,10 @@ export function KevinApp() {
       setFaceScanOpen(true);
       setFaceLoading(false);
       setFaceStatus(
-        previewReady
-          ? "Camera ready — hold still for a moment."
+        captureReady
+          ? "Camera ready — tap capture when you are ready."
           : "Camera ready — if the preview stays black, allow browser camera access and try again.",
       );
-
-      if (faceScanTimerRef.current) {
-        window.clearInterval(faceScanTimerRef.current);
-      }
-
-      const scanFace = async () => {
-        if (!videoRef.current) return;
-        if (videoRef.current.readyState < 2) return;
-
-        try {
-          const canvas = document.createElement("canvas");
-          canvas.width = videoRef.current.videoWidth || 640;
-          canvas.height = videoRef.current.videoHeight || 480;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) {
-            setFaceStatus("The camera preview could not be captured for analysis.");
-            return;
-          }
-
-          ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-          const imageBase64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
-          const result = await analyzeMoodFromImage(imageBase64);
-          if (!result.mood) {
-            setFaceStatus("No face detected yet. Move a little closer to the camera.");
-            return;
-          }
-
-          setFaceMood(result.mood ?? "Neutral");
-          setFaceConfidence(Number((result.confidence ?? 0.4).toFixed(2)));
-          setFaceStatus(`${result.message ?? "Your mood looks calm."} ${Math.round((result.confidence ?? 0.4) * 100)}% confidence.`);
-        } catch {
-          setFaceStatus("The face scan is still warming up — try again in a second.");
-        }
-      };
-
-      void scanFace();
-      faceScanTimerRef.current = window.setInterval(() => {
-        void scanFace();
-      }, 1800);
     } catch (error) {
       setFaceLoading(false);
       setCameraActive(false);
@@ -437,6 +352,48 @@ export function KevinApp() {
           ? error.message
           : "Camera access was blocked. Please allow camera permission and try again.",
       );
+    }
+  }, [captureReady]);
+
+  const captureFaceImage = useCallback(async () => {
+    if (!videoRef.current) {
+      setFaceStatus("The camera preview is not ready yet.");
+      return;
+    }
+
+    if (videoRef.current.readyState < 2) {
+      setFaceStatus("The camera is still warming up. Please wait a moment and try again.");
+      return;
+    }
+
+    setFaceLoading(true);
+    setFaceStatus("Capturing your photo and predicting your mood…");
+
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = videoRef.current.videoWidth || 640;
+      canvas.height = videoRef.current.videoHeight || 480;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        setFaceStatus("The camera preview could not be captured for analysis.");
+        return;
+      }
+
+      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+      const imageBase64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+      const result = await analyzeMoodFromImage(imageBase64);
+      if (!result.mood) {
+        setFaceStatus("No face detected yet. Move a little closer to the camera and try again.");
+        return;
+      }
+
+      setFaceMood(result.mood ?? "Neutral");
+      setFaceConfidence(Number((result.confidence ?? 0.4).toFixed(2)));
+      setFaceStatus(`${result.message ?? "Your mood looks calm."} ${Math.round((result.confidence ?? 0.4) * 100)}% confidence.`);
+    } catch {
+      setFaceStatus("The capture could not be processed. Please try again.");
+    } finally {
+      setFaceLoading(false);
     }
   }, []);
 
@@ -475,15 +432,15 @@ export function KevinApp() {
           <section className="kevin-face-scan" aria-live="polite">
             <div className="kevin-face-scan-header">
               <div>
-                <h3>Face mood scan</h3>
-                <p>Let Kevin estimate your current mood from your camera.</p>
+                <h3>Photo mood check</h3>
+                <p>Take a picture and let Kevin estimate your current mood.</p>
               </div>
               <button
                 type="button"
                 className="kevin-face-scan-toggle"
                 onClick={() => void toggleFaceScan()}
               >
-                {faceScanOpen ? "Hide scan" : "Scan face"}
+                {faceScanOpen ? "Hide scan" : "Take photo"}
               </button>
             </div>
             {faceScanOpen ? (
@@ -525,7 +482,15 @@ export function KevinApp() {
                       onClick={() => void startFaceScan()}
                       disabled={faceLoading || cameraActive}
                     >
-                      {cameraActive ? "Scanning…" : "Start camera"}
+                      {cameraActive ? "Camera ready" : "Start camera"}
+                    </button>
+                    <button
+                      type="button"
+                      className="kevin-face-button kevin-face-button-primary"
+                      onClick={() => void captureFaceImage()}
+                      disabled={!cameraActive || faceLoading || !captureReady}
+                    >
+                      {faceLoading ? "Predicting…" : "Capture & predict"}
                     </button>
                     <button
                       type="button"
@@ -540,7 +505,7 @@ export function KevinApp() {
               </div>
             ) : (
               <p className="kevin-face-hint">
-                Tap “Scan face” to let Kevin read your expression and offer a kinder response.
+                Tap “Take photo” to capture a picture and let Kevin read your expression and offer a kinder response.
               </p>
             )}
           </section>
