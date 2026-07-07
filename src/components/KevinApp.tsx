@@ -66,6 +66,7 @@ export function KevinApp() {
   const [faceLoading, setFaceLoading] = useState(false);
   const [faceMood, setFaceMood] = useState("Neutral");
   const [faceConfidence, setFaceConfidence] = useState(0.38);
+  const [cameraReady, setCameraReady] = useState(false);
   const [faceStatus, setFaceStatus] = useState(
     "Tap to scan your face and let Kevin estimate your mood.",
   );
@@ -119,6 +120,7 @@ export function KevinApp() {
       videoRef.current.srcObject = null;
     }
     setCameraActive(false);
+    setCameraReady(false);
     setFaceLoading(false);
     setFaceStatus("Face scan paused.");
   }, []);
@@ -333,21 +335,48 @@ export function KevinApp() {
         throw new Error("The face analysis models could not be loaded from the available CDNs.");
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user" },
-        audio: false,
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "user" },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
 
+      let previewReady = false;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
-        await videoRef.current.play();
+        videoRef.current.muted = true;
+        videoRef.current.playsInline = true;
+        try {
+          await videoRef.current.play();
+          previewReady = true;
+          setCameraReady(true);
+        } catch {
+          previewReady = false;
+          setCameraReady(false);
+          setFaceStatus("Camera is connected, but autoplay is blocked. Allow playback and try again.");
+        }
       }
 
       setCameraActive(true);
       setFaceScanOpen(true);
       setFaceLoading(false);
-      setFaceStatus("Camera ready — hold still for a moment.");
+      setFaceStatus(
+        previewReady
+          ? "Camera ready — hold still for a moment."
+          : "Camera ready — if the preview stays black, allow browser camera access and try again.",
+      );
 
       if (faceScanTimerRef.current) {
         window.clearInterval(faceScanTimerRef.current);
@@ -467,6 +496,12 @@ export function KevinApp() {
                       autoPlay
                       playsInline
                       muted
+                      onLoadedMetadata={() => setCameraReady(true)}
+                      onPlay={() => setCameraReady(true)}
+                      onError={() => {
+                        setCameraReady(false);
+                        setFaceStatus("The camera preview could not be shown. Check your camera permissions and try again.");
+                      }}
                     />
                   ) : (
                     <div className="kevin-face-placeholder">
