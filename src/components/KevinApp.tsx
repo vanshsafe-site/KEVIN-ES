@@ -8,6 +8,26 @@ interface Message {
   error?: boolean;
 }
 
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+};
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
+
 const SUGGESTIONS = [
   "I'm feeling anxious",
   "I had a rough day",
@@ -36,9 +56,16 @@ export function KevinApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(true);
+  const [voiceStatus, setVoiceStatus] = useState("Voice ready");
   const chatRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const autoSendTimerRef = useRef<number | null>(null);
   const nearBottomRef = useRef(true);
+  const sendRef = useRef<(raw: string) => Promise<void>>(() => Promise.resolve());
 
   // auto-grow textarea
   useEffect(() => {
@@ -67,6 +94,93 @@ export function KevinApp() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, loading]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const SpeechRecognitionCtor =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognitionCtor) {
+      setVoiceSupported(false);
+      setVoiceStatus("Voice input is not supported in this browser.");
+      return;
+    }
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event) => {
+      let interimText = "";
+      let finalText = "";
+
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result[0].transcript.trim();
+        if (result[0].transcript) {
+          if (result.isFinal) {
+            finalText += `${transcript} `;
+          } else {
+            interimText += `${transcript} `;
+          }
+        }
+      }
+
+      const nextText = (finalText || interimText).trim();
+      if (nextText) {
+        setInput(nextText);
+      }
+
+      if (finalText.trim()) {
+        if (autoSendTimerRef.current) {
+          window.clearTimeout(autoSendTimerRef.current);
+        }
+        autoSendTimerRef.current = window.setTimeout(() => {
+          void sendRef.current(finalText.trim());
+        }, 300);
+      }
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+      setVoiceStatus("Voice input was interrupted.");
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      setVoiceStatus("Voice input ready.");
+    };
+
+    recognitionRef.current = recognition;
+    setVoiceSupported(true);
+    setVoiceStatus("Voice ready");
+
+    return () => {
+      recognition.stop();
+      recognitionRef.current = null;
+      if (autoSendTimerRef.current) {
+        window.clearTimeout(autoSendTimerRef.current);
+      }
+    };
+  }, []);
+
+  const speakText = useCallback(
+    (text: string) => {
+      if (typeof window === "undefined" || !autoSpeak) return;
+      if (!("speechSynthesis" in window)) return;
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "en-US";
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      utterance.volume = 1;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    },
+    [autoSpeak],
+  );
+
   const send = useCallback(
     async (raw: string) => {
       const text = raw.trim();
@@ -82,6 +196,9 @@ export function KevinApp() {
           ...m,
           { id: uid(), role: "kevin", text: reply || "…" },
         ]);
+        if (reply) {
+          window.setTimeout(() => speakText(reply), 100);
+        }
       } catch (e) {
         const msg =
           e instanceof Error
@@ -91,14 +208,37 @@ export function KevinApp() {
           ...m,
           { id: uid(), role: "kevin", text: msg, error: true },
         ]);
-        setInput(text); // repopulate so user doesn't lose their message
+        setInput(text);
       } finally {
         setLoading(false);
         setTimeout(() => textareaRef.current?.focus(), 0);
       }
     },
-    [loading],
+    [loading, speakText],
   );
+
+  useEffect(() => {
+    sendRef.current = send;
+  }, [send]);
+
+  const toggleListening = useCallback(() => {
+    const recognition = recognitionRef.current;
+    if (!voiceSupported || !recognition) {
+      setVoiceStatus("Voice input is not available on this device.");
+      return;
+    }
+
+    if (isListening) {
+      recognition.stop();
+      setIsListening(false);
+      setVoiceStatus("Voice input stopped.");
+      return;
+    }
+
+    setIsListening(true);
+    setVoiceStatus("Listening…");
+    recognition.start();
+  }, [isListening, voiceSupported]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -170,6 +310,23 @@ export function KevinApp() {
         }}
       >
         <div className="kevin-inputbar-inner">
+          <button
+            type="button"
+            className={`kevin-voice ${isListening ? "active" : ""}`}
+            onClick={toggleListening}
+            disabled={!voiceSupported}
+            aria-label={isListening ? "Stop voice input" : "Start voice input"}
+          >
+            {isListening ? "■" : "♫"}
+          </button>
+          <button
+            type="button"
+            className={`kevin-voice kevin-voice-secondary ${autoSpeak ? "active" : ""}`}
+            onClick={() => setAutoSpeak((value) => !value)}
+            aria-label={autoSpeak ? "Mute voice replies" : "Enable voice replies"}
+          >
+            {autoSpeak ? "🔊" : "🔈"}
+          </button>
           <textarea
             ref={textareaRef}
             className="kevin-textarea"
@@ -200,6 +357,9 @@ export function KevinApp() {
               <path d="M4 12l16-8-6 16-2-7-8-1z" />
             </svg>
           </button>
+        </div>
+        <div className="kevin-voice-status" aria-live="polite">
+          {isListening ? "Listening for your voice…" : voiceStatus}
         </div>
       </form>
     </div>
