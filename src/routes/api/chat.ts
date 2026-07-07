@@ -1,3 +1,4 @@
+import { GoogleGenAI } from "@google/genai";
 import { createFileRoute } from "@tanstack/react-router";
 
 const SYSTEM_INSTRUCTION = `You are Kevin (K.E.V.I.N), a warm, concise emotional support companion created by Vansh Garg. Reply in short, human, plain-text sentences. No emojis. No asterisks. No markdown. Never claim to be a therapist; gently encourage professional help when appropriate. Be supportive, validating, and grounded.`;
@@ -26,36 +27,13 @@ export const Route = createFileRoute("/api/chat")({
             });
           }
 
-          const res = await fetch(
-            `https://gemini.googleapis.com/v1/chat/completions?key=${encodeURIComponent(apiKey)}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                model: "google/gemini-2.5-flash",
-                messages: [
-                  { role: "system", content: SYSTEM_INSTRUCTION },
-                  { role: "user", content: message },
-                ],
-              }),
-            },
-          );
+          const ai = new GoogleGenAI({ apiKey });
+          const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: `${SYSTEM_INSTRUCTION}\n\nUser: ${message}`,
+          });
 
-          if (!res.ok) {
-            const text = await res.text().catch(() => "");
-            console.error("AI gateway error", res.status, text);
-            return new Response(
-              JSON.stringify({ error: "Kevin couldn't respond right now." }),
-              { status: 500, headers: { "Content-Type": "application/json" } },
-            );
-          }
-
-          const data = (await res.json()) as {
-            choices?: { message?: { content?: string } }[];
-          };
-          const reply = data.choices?.[0]?.message?.content?.trim() ?? "";
+          const reply = response.text?.trim() ?? "";
           return new Response(JSON.stringify({ reply }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
