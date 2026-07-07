@@ -74,7 +74,7 @@ export function KevinApp() {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [autoSpeak, setAutoSpeak] = useState(true);
   const [voiceStatus, setVoiceStatus] = useState("Voice ready");
-  const [faceScanOpen, setFaceScanOpen] = useState(false);
+  const [faceScanOpen, setFaceScanOpen] = useState(true);
   const [cameraActive, setCameraActive] = useState(false);
   const [faceLoading, setFaceLoading] = useState(false);
   const [faceMood, setFaceMood] = useState("Neutral");
@@ -82,7 +82,7 @@ export function KevinApp() {
   const [cameraReady, setCameraReady] = useState(false);
   const [captureReady, setCaptureReady] = useState(false);
   const [faceStatus, setFaceStatus] = useState(
-    "Tap to scan your face and let Kevin estimate your mood.",
+    "Camera ready. Capture a photo to see your mood result.",
   );
   const chatRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -137,7 +137,7 @@ export function KevinApp() {
     setCameraReady(false);
     setCaptureReady(false);
     setFaceLoading(false);
-    setFaceStatus("Face scan paused.");
+    setFaceStatus("Camera paused.");
   }, []);
 
   useEffect(() => {
@@ -300,7 +300,7 @@ export function KevinApp() {
     }
 
     setFaceLoading(true);
-    setFaceStatus("Opening your camera…");
+    setFaceStatus("Opening camera…");
 
     try {
       let stream: MediaStream;
@@ -339,11 +339,7 @@ export function KevinApp() {
       setCameraActive(true);
       setFaceScanOpen(true);
       setFaceLoading(false);
-      setFaceStatus(
-        captureReady
-          ? "Camera ready — tap capture when you are ready."
-          : "Camera ready — if the preview stays black, allow browser camera access and try again.",
-      );
+      setFaceStatus("Camera ready. Capture a photo to see your mood result.");
     } catch (error) {
       setFaceLoading(false);
       setCameraActive(false);
@@ -353,7 +349,7 @@ export function KevinApp() {
           : "Camera access was blocked. Please allow camera permission and try again.",
       );
     }
-  }, [captureReady]);
+  }, []);
 
   const captureFaceImage = useCallback(async () => {
     if (!videoRef.current) {
@@ -367,7 +363,7 @@ export function KevinApp() {
     }
 
     setFaceLoading(true);
-    setFaceStatus("Capturing your photo and predicting your mood…");
+    setFaceStatus("Scanning photo…");
 
     try {
       const canvas = document.createElement("canvas");
@@ -375,7 +371,7 @@ export function KevinApp() {
       canvas.height = videoRef.current.videoHeight || 480;
       const ctx = canvas.getContext("2d");
       if (!ctx) {
-        setFaceStatus("The camera preview could not be captured for analysis.");
+        setFaceStatus("The photo could not be captured.");
         return;
       }
 
@@ -391,22 +387,15 @@ export function KevinApp() {
       setFaceConfidence(Number((result.confidence ?? 0.4).toFixed(2)));
       setFaceStatus(`${result.message ?? "Your mood looks calm."} ${Math.round((result.confidence ?? 0.4) * 100)}% confidence.`);
     } catch {
-      setFaceStatus("The capture could not be processed. Please try again.");
+      setFaceStatus("Could not scan photo. Please try again.");
     } finally {
       setFaceLoading(false);
     }
   }, []);
 
-  const toggleFaceScan = useCallback(async () => {
-    if (faceScanOpen) {
-      stopFaceScan();
-      setFaceScanOpen(false);
-      return;
-    }
-
-    setFaceScanOpen(true);
-    await startFaceScan();
-  }, [faceScanOpen, startFaceScan, stopFaceScan]);
+  useEffect(() => {
+    void startFaceScan();
+  }, [startFaceScan]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -433,81 +422,47 @@ export function KevinApp() {
             <div className="kevin-face-scan-header">
               <div>
                 <h3>Photo mood check</h3>
-                <p>Take a picture and let Kevin estimate your current mood.</p>
               </div>
-              <button
-                type="button"
-                className="kevin-face-scan-toggle"
-                onClick={() => void toggleFaceScan()}
-              >
-                {faceScanOpen ? "Hide scan" : "Take photo"}
-              </button>
             </div>
-            {faceScanOpen ? (
-              <div className="kevin-face-scan-body">
-                <div className="kevin-face-video-wrap">
-                  {cameraActive ? (
-                    <video
-                      ref={videoRef}
-                      className="kevin-face-video"
-                      autoPlay
-                      playsInline
-                      muted
-                      onLoadedMetadata={() => setCameraReady(true)}
-                      onPlay={() => setCameraReady(true)}
-                      onError={() => {
-                        setCameraReady(false);
-                        setFaceStatus("The camera preview could not be shown. Check your camera permissions and try again.");
-                      }}
-                    />
-                  ) : (
-                    <div className="kevin-face-placeholder">
-                      <span>Camera preview will appear here</span>
-                    </div>
-                  )}
+            <div className="kevin-face-scan-body">
+              <div className="kevin-face-video-wrap">
+                {cameraActive ? (
+                  <video
+                    ref={videoRef}
+                    className="kevin-face-video"
+                    autoPlay
+                    playsInline
+                    muted
+                    onLoadedMetadata={() => setCameraReady(true)}
+                    onPlay={() => setCameraReady(true)}
+                    onError={() => {
+                      setCameraReady(false);
+                      setFaceStatus("Camera could not be shown.");
+                    }}
+                  />
+                ) : (
+                  <div className="kevin-face-placeholder">
+                    <span>Camera preview</span>
+                  </div>
+                )}
+              </div>
+              <div className="kevin-face-insight">
+                <div className="kevin-face-pill">
+                  {faceLoading ? "Scanning…" : faceMood}
                 </div>
-                <div className="kevin-face-insight">
-                  <div className="kevin-face-pill">
-                    {faceLoading ? "Reading…" : faceMood}
-                  </div>
-                  <p>{faceStatus}</p>
-                  <div className="kevin-face-confidence">
-                    <span>Confidence</span>
-                    <strong>{Math.round(faceConfidence * 100)}%</strong>
-                  </div>
-                  <div className="kevin-face-actions">
-                    <button
-                      type="button"
-                      className="kevin-face-button kevin-face-button-primary"
-                      onClick={() => void startFaceScan()}
-                      disabled={faceLoading || cameraActive}
-                    >
-                      {cameraActive ? "Camera ready" : "Start camera"}
-                    </button>
-                    <button
-                      type="button"
-                      className="kevin-face-button kevin-face-button-primary"
-                      onClick={() => void captureFaceImage()}
-                      disabled={!cameraActive || faceLoading || !captureReady}
-                    >
-                      {faceLoading ? "Predicting…" : "Capture & predict"}
-                    </button>
-                    <button
-                      type="button"
-                      className="kevin-face-button"
-                      onClick={() => stopFaceScan()}
-                      disabled={!cameraActive}
-                    >
-                      Stop
-                    </button>
-                  </div>
+                <p>{faceStatus}</p>
+                <div className="kevin-face-actions">
+                  <button
+                    type="button"
+                    className="kevin-face-button kevin-face-button-primary"
+                    onClick={() => void captureFaceImage()}
+                    disabled={!cameraActive || faceLoading || !captureReady}
+                  >
+                    {faceLoading ? "Scanning…" : "Capture"}
+                  </button>
                 </div>
               </div>
-            ) : (
-              <p className="kevin-face-hint">
-                Tap “Take photo” to capture a picture and let Kevin read your expression and offer a kinder response.
-              </p>
-            )}
+            </div>
           </section>
 
           {messages.length === 0 ? (
