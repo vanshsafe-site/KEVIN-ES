@@ -311,10 +311,27 @@ export function KevinApp() {
         });
       }
 
-      const modelUrl = "https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights/";
-      await window.faceapi?.nets?.tinyFaceDetector?.load(modelUrl);
-      await window.faceapi?.nets?.faceLandmark68Net?.load(modelUrl);
-      await window.faceapi?.nets?.faceExpressionNet?.load(modelUrl);
+      const modelBaseUrls = [
+        "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/",
+        "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights/",
+      ];
+
+      let loadedModelBase = "";
+      for (const candidate of modelBaseUrls) {
+        try {
+          await window.faceapi?.nets?.tinyFaceDetector?.load(candidate);
+          await window.faceapi?.nets?.faceLandmark68Net?.load(candidate);
+          await window.faceapi?.nets?.faceExpressionNet?.load(candidate);
+          loadedModelBase = candidate;
+          break;
+        } catch {
+          // Try the next CDN if the weight manifest is unavailable.
+        }
+      }
+
+      if (!loadedModelBase) {
+        throw new Error("The face analysis models could not be loaded from the available CDNs.");
+      }
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user" },
